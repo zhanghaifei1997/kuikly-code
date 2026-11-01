@@ -3,6 +3,33 @@
   "componentName": "kuikly-code",
   "componentType": "KuiklyView",
   "versions": {
+    "0.3.0": {
+      "kuikly": ">=2.30.0-2.0.21",
+      "platforms": {
+        "android": {
+          "shared": "io.github.zhanghaifei1997:kuiklyCode:{version}",
+          "repositories": [
+            "https://mirrors.tencent.com/repository/maven-tencent/"
+          ]
+        },
+        "ios": {
+          "shared": "io.github.zhanghaifei1997:kuiklyCode:{version}",
+          "note": "宿主 shared 模块 gradle 引用，随 Kuikly framework 编译，无需单独 pod"
+        },
+        "js": {
+          "shared": "io.github.zhanghaifei1997:kuiklyCode:{version}"
+        },
+        "ohos": {
+          "note": "纯 common 代码零原生分支：源码模块 include，或 -ohos 变体（宿主 KuiklyBase ohos toolchain 下 publishToMavenLocal）"
+        }
+      },
+      "registration": {
+        "android": null,
+        "ios": null,
+        "ohos": null,
+        "note": "纯视图组件，无原生模块，无需注册"
+      }
+    },
     "0.2.0": {
       "kuikly": ">=2.30.0-2.0.21",
       "platforms": {

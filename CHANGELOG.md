@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.0 (2026-11-02)
+
+动态刷新版本（付款码轮换场景，API 向后兼容）。
+
+**QRCodeView 动态刷新**
+- `refreshIntervalSeconds` 定时自动刷新：到点触发 `onRefresh` 事件，宿主更新数据源（可异步），
+  组件轮询 `textProvider` 直到值变化（`refreshTimeoutMs` 超时自动放弃并重启倒计时）
+- `onCountdown(secondsLeft)` 每秒倒计时回调（可做「N 秒后自动更新」UI）
+- `refresh()` 手动触发（公开方法，任意时刻可调）
+- 四种过渡动画 `QRRefreshAnimation`：
+  - `NONE` 直接切换
+  - `CROSS_FADE` 交叉淡化（默认，时长可配 `refreshAnimationDurationMs`）
+  - `SLIDE_VERTICAL` 旧码上移出、新码自下方入（overflow 裁剪）
+  - `LOADING` 转场等待 + 加载指示：默认 3/4 圆弧无限旋转（`Rotate(360°)+repeatForever` 声明式动画，零定时器），
+    `loadingView` 可注入任意自定义 loading 视图；遮罩色可配
+- 实现：observable 状态机（IDLE/WAITING/ANIMATING）+ 双画布绝对定位交叉过渡 + 两步渲染触发 `animate()`
+- 视图移除时自动清理 Timer/postDelayed
+
 ## 0.2.0 (2026-11-02)
 
 功能增强版本（API 向后兼容）。

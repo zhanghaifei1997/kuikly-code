@@ -16,6 +16,8 @@ Code 128-B/C 编码器与 EAN-13 编码器（编码表均对照 zxing / ISO 标�
 - **中心 logo 叠加**（白底圆角卡片，建议配合 HIGH 级纠错）
 - **掩码自动最优选择**（ISO 18004 惩罚分规则评估 8 种掩码，可指定覆盖）
 - `minVersion` 版本下限（防止文本变短时二维码尺寸跳变）
+- **动态刷新（0.3.0+，付款码轮换）**：定时到点回调宿主取新码，自动轮询检测数据更新，
+  四种过渡动画（直接切换 / 交叉淡化 / 上下推移 / Loading 转场，loading 可自定义）
 - 四纠错级别（L/M/H/Q）与标准静区（默认 4 模块，可配）
 - `textProvider` 响应式刷新、`onError` 事件
 
@@ -49,7 +51,7 @@ repositories {
 }
 
 dependencies {
-    implementation("io.github.zhanghaifei1997:kuiklyCode:0.2.0")
+    implementation("io.github.zhanghaifei1997:kuiklyCode:0.3.0")
 }
 ```
 
@@ -99,6 +101,26 @@ BarcodeView {
 }
 ```
 
+### 动态刷新（0.3.0+，付款码轮换）
+
+```kotlin
+QRCodeView {
+    attr {
+        textProvider = { viewModel.payCode }
+        refreshIntervalSeconds = 60                      // 60 秒自动轮换
+        refreshAnimation = QRRefreshAnimation.LOADING    // 直接切换/交叉淡化/上下推移/Loading
+        refreshAnimationDurationMs = 350
+        // loadingView = { Text { attr { text("加载中...") } } }   // 自定义 loading（可选）
+    }
+    event {
+        refresh { viewModel.fetchNewPayCode() }           // 到点取新码（可异步）
+        countdown { s -> viewModel.countdownText = "${s}s 后自动更新" }
+        error { code, msg -> viewModel.showFallback() }
+    }
+}
+// 也可随时手动触发：qrCodeView.refresh()
+```
+
 ## API
 
 ### QRCodeViewAttr
@@ -118,6 +140,10 @@ BarcodeView {
 | maskPattern | MaskPattern? | null | 指定掩码；null=自动最优（0.2.0+） |
 | logoPath / logoSize | String? / Float | null/0 | 中心 logo；size 0=自动 22%（0.2.0+） |
 | logoPadding / logoCornerRadius / logoBgColor | - | 4/0/白 | logo 白底卡片样式 |
+| refreshIntervalSeconds | Int | 0 | 自动刷新间隔秒数，0=关闭（0.3.0+） |
+| refreshAnimation | QRRefreshAnimation | CROSS_FADE | NONE/CROSS_FADE/SLIDE_VERTICAL/LOADING（0.3.0+） |
+| refreshAnimationDurationMs / refreshTimeoutMs | Int | 350/10000 | 过渡时长 / 等待新内容超时 |
+| loadingView / loadingMaskColor | builder / Color | null/白 80% | 自定义 loading 视图 / 遮罩色 |
 
 ### BarcodeViewAttr
 
