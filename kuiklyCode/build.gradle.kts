@@ -17,6 +17,10 @@ android {
     defaultConfig {
         minSdk = 21
     }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
 }
 
 kotlin {
@@ -51,14 +55,17 @@ kotlin {
 // ---------- Maven Central 发布 ----------
 
 // sources jar 由 KMP 插件自动生成并挂到各 target publication；
-// javadoc jar Central 校验必需，KMP 无 javadoc 文档，附空 jar
-val emptyJavadocJar by tasks.registering(Jar::class) {
-    archiveClassifier.set("javadoc")
-}
-
+// javadoc jar Central 校验必需，KMP 无 javadoc 文档，附空 jar。
+// ⚠️ 每个 publication 必须各自生成 javadoc jar（独立目录），Gradle 8 下
+// 共享同一个 jar 会让多个签名任务输出相同 .asc 路径而冲突。
 publishing {
     publications.withType<MavenPublication>().configureEach {
-        artifact(emptyJavadocJar.get())
+        val pubName = name
+        val javadocJar = tasks.register("${pubName}JavadocJar", Jar::class) {
+            archiveClassifier.set("javadoc")
+            destinationDirectory.set(layout.buildDirectory.dir("libs-javadoc/$pubName"))
+        }
+        artifact(javadocJar.get())
         pom {
             name.set("kuikly-code")
             description.set("Kuikly QR code & Code128 barcode rendering views (classic Kuikly DSL, pure Kotlin common)")

@@ -6,7 +6,7 @@
 ## 0. 环境要求
 
 - JDK 17（本机 `~/.gradle/gradle.properties` 已全局固定 `org.gradle.java.home`）
-- 本仓库可独立构建：`settings.gradle.kts` + Gradle wrapper（7.6.3），`local.properties` 指向 Android SDK（不提交）
+- 本仓库可独立构建：`settings.gradle.kts` + Gradle wrapper（8.14.3）+ AGP 8.5.2（须 AGP 8 系 aapt2 解析 platform-35 新格式 arsc），`local.properties` 指向 Android SDK（不提交）
 - Maven Central 账号/命名空间/GPG 与 kuikly-app-icon 共用（见 kuikly-app-icon/docs/PUBLISH.md）
 
 ## 1. 本地快速验证（mavenLocal）
