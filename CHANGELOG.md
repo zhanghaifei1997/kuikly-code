@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.4.0 (2026-11-02)
+
+架构修正版本（**破坏性变更**，含迁移表）：组件回归纯展示职责，
+取数/重试/轮换定时器交还宿主业务，通过响应式 Provider 传入「数据 + 状态」。
+
+**新增**
+- `stateProvider: (() -> QRDisplayState)?`：四态展示（`SUCCESS` / `LOADING` / `EMPTY` / `ERROR`），
+  null = 恒 SUCCESS（纯展示用法完全兼容）
+- `emptyView` / `errorView` 注入：空态/异常态自定义视图（可在其中自行放重试按钮）；
+  默认占位 = Canvas 图形（虚线框 / 感叹号圆圈）+ 文案（`emptyText` / `errorText` / `placeholderColor` 可配）
+- 数据更新过渡改为**纯响应式驱动**：SUCCESS 态 `textProvider` 返回值变化时，
+  双画布交叉过渡由 `vif(text != currentText)` 检测触发（无轮询、无定时器），
+  过渡层经 `didMoveToParentView` 钩子调度提交
+
+**重命名 / 移除（0.3.0 → 0.4.0 迁移表）**
+
+| 0.3.0 | 0.4.0 | 说明 |
+|---|---|---|
+| `refreshIntervalSeconds` / `onRefresh` / `onCountdown` / `refresh()` | 宿主自管 Timer + 状态机 | 轮换节奏是业务职责：vm 里 setTimeout 到点取数即可 |
+| `QRRefreshAnimation.LOADING` | `stateProvider = { LOADING }` | loading 从「动画模式」改为「展示状态」 |
+| `QRRefreshAnimation` | `QRTransition`（NONE/CROSS_FADE/SLIDE_VERTICAL） | 枚举重命名 |
+| `refreshAnimation` / `refreshAnimationDurationMs` | `transition` / `transitionDurationMs` | 属性重命名 |
+| `refreshTimeoutMs` | 移除 | 随轮询机制一并移除 |
+| `loadingMaskColor` | 移除 | LOADING 态整区渲染，背景即 `bgColor` |
+| `loadingView` | 保留 | 语义不变（LOADING 态注入） |
+
+**宿主用法（付款码轮换）**
+
+```kotlin
+// ViewModel：状态机 + 轮换定时器（业务自管）
+// state: QRDisplayState；payCode: String（observable）
+QRCodeView {
+    attr {
+        textProvider = { vm.payCode }
+        stateProvider = { vm.state }
+        transition = QRTransition.CROSS_FADE
+    }
+    event { error { code, msg -> vm.fallback() } }
+}
+```
+
 ## 0.3.0 (2026-11-02)
 
 动态刷新版本（付款码轮换场景，API 向后兼容）。

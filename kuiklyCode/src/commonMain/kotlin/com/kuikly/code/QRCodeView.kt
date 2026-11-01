@@ -15,12 +15,12 @@ import com.tencent.kuikly.core.base.ViewBuilder
 import com.tencent.kuikly.core.base.ViewContainer
 import com.tencent.kuikly.core.directives.vif
 import com.tencent.kuikly.core.reactive.handler.observable
-import com.tencent.kuikly.core.timer.Timer
 import com.tencent.kuikly.core.timer.postDelayed
 import com.tencent.kuikly.core.timer.cancelPostCallback
 import com.tencent.kuikly.core.views.Canvas
 import com.tencent.kuikly.core.views.CanvasContext
 import com.tencent.kuikly.core.views.Image
+import com.tencent.kuikly.core.views.Text
 import com.tencent.kuikly.core.views.View
 import kotlin.math.PI
 
@@ -34,52 +34,63 @@ enum class QRCodeShape {
     CIRCLE,
     /** 圆角方形 */
     ROUND_RECT,
-    /** 菱形（0.2.0+） */
+    /** 菱形 */
     DIAMOND,
 }
 
 /**
- * 刷新动画类型（0.3.0+）
+ * 组件展示状态（0.4.0+）：由宿主业务驱动，组件按状态渲染对应视图。
+ * 宿主的取数、重试、轮换定时器均属业务逻辑，组件只负责展示。
  */
-enum class QRRefreshAnimation {
-    /** 直接切换（无动画） */
-    NONE,
-    /** 渐隐渐现（交叉淡化，默认） */
-    CROSS_FADE,
-    /** 旧码向上移出，新码从下方移入 */
-    SLIDE_VERTICAL,
-    /** Loading 转场：等待新内容期间显示加载指示（默认旋转圆弧，可用 loadingView 自定义） */
+enum class QRDisplayState {
+    /** 正常展示二维码（textProvider 数据有效） */
+    SUCCESS,
+    /** 加载中：显示 loading 动效（默认旋转圆弧，可用 loadingView 自定义） */
     LOADING,
+    /** 空数据：显示空态占位（默认图形+文字，可用 emptyView 自定义） */
+    EMPTY,
+    /** 异常：显示错误占位（默认图形+文字，可用 errorView 自定义） */
+    ERROR,
 }
 
-/** 刷新阶段（内部状态机） */
-internal enum class QRRefreshPhase {
-    /** 空闲（正常展示 currentText） */
-    IDLE,
-    /** 已触发刷新，等待 textProvider 返回新内容（LOADING 模式下显示 loading） */
-    WAITING,
-    /** 已取得新内容，正在播放过渡动画 */
-    ANIMATING,
+/**
+ * 数据更新过渡动画（0.4.0+）：SUCCESS 态下 textProvider 返回值变化时播放
+ */
+enum class QRTransition {
+    /** 直接切换（无动画） */
+    NONE,
+    /** 渐入渐出（交叉淡化，默认） */
+    CROSS_FADE,
+    /** 旧码向上移出，新码自下方移入 */
+    SLIDE_VERTICAL,
 }
 
 /**
  * QRCodeView 属性
  */
 class QRCodeViewAttr : ComposeAttr() {
-    /** 要编码的文本（支持 Provider 模式实现响应式） */
+    /** 要编码的文本（响应式：数据源变化自动更新展示，SUCCESS 态数据变化可播过渡动画） */
     var textProvider: (() -> String)? = null
 
     /** 获取要编码的文本 */
     val text: String
         get() = textProvider?.invoke() ?: ""
 
+    /** 展示状态 Provider（响应式，0.4.0+）：宿主业务状态机驱动（取数中/空/失败/成功）；
+     *  null = 恒为 SUCCESS（纯展示用法） */
+    var stateProvider: (() -> QRDisplayState)? = null
+
+    /** 当前展示状态 */
+    val displayState: QRDisplayState
+        get() = stateProvider?.invoke() ?: QRDisplayState.SUCCESS
+
     /** 二维码尺寸（宽=高） */
     var size: Float = 248f
 
-    /** 前景色（深色模块颜色） */
+    /** 前景色（深色模块颜色；loading 圆弧与占位图形默认色） */
     var foregroundColor: Color = Color.BLACK
 
-    /** 背景色（浅色模块颜色） */
+    /** 背景色（浅色模块颜色；非 SUCCESS 态背景同色） */
     var bgColor: Color = Color.WHITE
 
     /** 纠错级别（叠加 logo 时建议 HIGH 及以上） */
@@ -106,13 +117,13 @@ class QRCodeViewAttr : ComposeAttr() {
     /** 四周静区宽度（模块数）。ISO 18004 建议 4X，设 0 可关闭（不建议） */
     var quietZoneModules: Int = 4
 
-    /** 版本下限（1-40，0.2.0+）：固定最小矩阵尺寸，防止文本变短时二维码跳变缩小 */
+    /** 版本下限（1-40）：固定最小矩阵尺寸，防止文本变短时二维码跳变缩小 */
     var minVersion: Int = 1
 
-    /** 指定掩码模式；null = 自动选择惩罚分最低的最优掩码（0.2.0+ 默认） */
+    /** 指定掩码模式；null = 自动选择惩罚分最低的最优掩码 */
     var maskPattern: MaskPattern? = null
 
-    /** 中心 logo 图片路径（0.2.0+）；叠加 logo 会遮挡部分模块，建议配合 HIGH/VERY_HIGH 纠错 */
+    /** 中心 logo 图片路径；叠加 logo 会遮挡部分模块，建议配合 HIGH/VERY_HIGH 纠错 */
     var logoPath: String? = null
 
     /** logo 尺寸（0 = 自动取 size 的 22%） */
@@ -127,51 +138,44 @@ class QRCodeViewAttr : ComposeAttr() {
     /** logo 白底颜色 */
     var logoBgColor: Color = Color.WHITE
 
-    // ---------- 动态刷新（0.3.0+） ----------
+    // ---------- 数据更新过渡（0.4.0+） ----------
 
-    /** 自动刷新间隔（秒），0 = 不自动刷新。到点触发 onRefresh 事件，宿主更新数据源后自动过渡到新码 */
-    var refreshIntervalSeconds: Int = 0
+    /** 过渡动画类型，默认交叉淡化 */
+    var transition: QRTransition = QRTransition.CROSS_FADE
 
-    /** 刷新过渡动画类型，默认交叉淡化 */
-    var refreshAnimation: QRRefreshAnimation = QRRefreshAnimation.CROSS_FADE
+    /** 过渡动画时长（毫秒） */
+    var transitionDurationMs: Int = 350
 
-    /** 过渡动画时长（毫秒），CROSS_FADE / SLIDE_VERTICAL / LOADING 淡入生效 */
-    var refreshAnimationDurationMs: Int = 350
+    // ---------- 状态占位（0.4.0+） ----------
 
-    /** 触发刷新后等待 textProvider 返回新内容的超时（毫秒），超时未变化则放弃本次刷新 */
-    var refreshTimeoutMs: Int = 10_000
-
-    /** 自定义 loading 视图（LOADING 模式生效；null = 默认旋转圆弧） */
+    /** 自定义 loading 视图（LOADING 态生效；null = 默认旋转圆弧） */
     var loadingView: (ViewContainer<*, *>.() -> Unit)? = null
 
-    /** loading 遮罩背景色 */
-    var loadingMaskColor: Color = Color(0xCCFFFFFF)
+    /** 自定义空态视图（EMPTY 态生效；null = 默认虚线框 + 文案） */
+    var emptyView: (ViewContainer<*, *>.() -> Unit)? = null
+
+    /** 自定义异常视图（ERROR 态生效；null = 默认感叹号 + 文案；可在注入视图中自行放重试按钮） */
+    var errorView: (ViewContainer<*, *>.() -> Unit)? = null
+
+    /** 空态默认文案 */
+    var emptyText: String = "暂无内容"
+
+    /** 异常态默认文案 */
+    var errorText: String = "加载失败"
+
+    /** 占位图形/文字颜色 */
+    var placeholderColor: Color = Color(0xFF999999)
 }
 
 /**
  * QRCodeView 事件
  */
 class QRCodeViewEvent : ComposeEvent() {
-    /** 编码失败回调：code 1=文本为空, 2=编码异常（超长等） */
+    /** 编码失败回调：code 2=编码异常（超长等） */
     internal var onError: ((code: Int, message: String) -> Unit)? = null
 
     fun error(callback: (code: Int, message: String) -> Unit) {
         onError = callback
-    }
-
-    /** 刷新间隔到点（或手动 refresh()）：宿主在此回调中更新 textProvider 背后的数据源（可异步）；
-     *  组件会轮询 textProvider 直到值变化后自动播放过渡动画 */
-    internal var onRefresh: (() -> Unit)? = null
-
-    fun refresh(callback: () -> Unit) {
-        onRefresh = callback
-    }
-
-    /** 每秒倒计时回调（refreshIntervalSeconds > 0 时），可用于展示「N 秒后自动更新」 */
-    internal var onCountdown: ((secondsLeft: Int) -> Unit)? = null
-
-    fun countdown(callback: (secondsLeft: Int) -> Unit) {
-        onCountdown = callback
     }
 }
 
@@ -179,29 +183,28 @@ class QRCodeViewEvent : ComposeEvent() {
  * 二维码视图组件
  *
  * 内置 QR 编码引擎（qrcode-kotlin 血统）+ Kuikly Canvas 绘制，
- * 支持多种模块形状（方形/圆点/圆角/菱形）、颜色（纯色/渐变）、中心 logo、
- * 自动最优掩码与版本下限，完全在本地生成二维码，不依赖网络与原生能力。
+ * 纯本地生成、零原生依赖。**组件只负责展示**：取数/重试/轮换定时器由宿主业务实现，
+ * 通过响应式 Provider 把「数据 + 状态」传进来。
  *
- * ## 动态刷新（0.3.0+，付款码轮换场景）
  * ```kotlin
+ * // 宿主 viewmodel 自管状态机（loading/empty/error/success）与轮换定时器
  * QRCodeView {
  *     attr {
  *         textProvider = { vm.payCode }
- *         refreshIntervalSeconds = 60          // 60 秒自动轮换
- *         refreshAnimation = QRRefreshAnimation.LOADING
- *         refreshAnimationDurationMs = 350
+ *         stateProvider = { vm.state }              // SUCCESS/LOADING/EMPTY/ERROR
+ *         transition = QRTransition.CROSS_FADE     // SUCCESS 数据变化时的过渡动画
+ *         errorCorrectionLevel = ErrorCorrectionLevel.HIGH
  *     }
  *     event {
- *         refresh { vm.fetchNewPayCode() }      // 到点让宿主取新码（可异步）
- *         countdown { s -> vm.countdownText = "${s}s" }
  *         error { code, msg -> vm.fallback() }
  *     }
  * }
  * ```
  *
- * 过渡动画支持：NONE（直接切换）/ CROSS_FADE（交叉淡化）/ SLIDE_VERTICAL（上下推移）/
- * LOADING（转场等待 + 默认旋转圆弧或 [QRCodeViewAttr.loadingView] 自定义）。
- * 也可随时调用视图的 [refresh] 手动触发。
+ * - 数据更新：`textProvider` 返回值变化 → 自动重绘；SUCCESS 态且配置过渡动画时，
+ *   旧码与新码双画布交叉过渡（渐入渐出 / 上下推移），由响应式检测驱动，无轮询
+ * - LOADING：默认旋转圆弧（声明式动画），`loadingView` 可注入任意自定义效果
+ * - EMPTY / ERROR：默认占位图形+文案，`emptyView` / `errorView` 可注入（重试按钮等自行实现）
  */
 class QRCodeView : ComposeView<QRCodeViewAttr, QRCodeViewEvent>() {
 
@@ -212,37 +215,21 @@ class QRCodeView : ComposeView<QRCodeViewAttr, QRCodeViewEvent>() {
     internal val viewAttr: QRCodeViewAttr get() = attr
     internal val viewEvent: QRCodeViewEvent get() = event
 
-    // ---------- 刷新状态机（observable 驱动重渲染） ----------
-
-    /** 当前展示的文本（过渡期间旧画布内容） */
+    /** 已提交展示的文本（过渡期间旧画布内容；NONE 模式直接跟随 provider） */
     internal var currentText: String by observable("")
 
-    /** 过渡期间的新文本（null = 非过渡态） */
-    internal var nextText: String? by observable(null)
-
-    /** 状态机阶段 */
-    internal var phase: QRRefreshPhase by observable(QRRefreshPhase.IDLE)
-
-    /** 过渡动画启动开关（两步渲染：先静态铺初值，再翻 true 触发 animate） */
+    /** 过渡动画激活开关（两步渲染：先静态铺初值，再翻 true 触发 animate） */
     internal var animActive: Boolean by observable(false)
 
     /** 每次过渡递增，作为动画触发 key */
     internal var animKey: Int by observable(0)
 
-    /** 倒计时秒数（仅事件用，不驱动渲染） */
-    private var secondsLeft: Int = 0
-
-    private var countdownTimer: Timer? = null
-    private var pollTimer: Timer? = null
-
-    /** 轮询剩余次数（common 无时间 API，用 tick 计数：100ms/次） */
-    private var pollTicksLeft: Int = 0
-    private var pollOldText: String = ""
+    /** 过渡层插入序号（防止 vif 快速重建时旧定时器提交新过渡） */
+    private var transitionSeq: Int = 0
     private val pendingTimeouts = mutableListOf<String>()
 
     override fun body(): ViewBuilder {
         val ctx = this
-        startCountdownIfNeeded()
         return {
             View {
                 attr {
@@ -251,46 +238,40 @@ class QRCodeView : ComposeView<QRCodeViewAttr, QRCodeViewEvent>() {
                     overflow(true)
                 }
 
-                // ===== 当前码画布（绝对定位铺满） =====
-                View {
-                    attr {
-                        positionAbsolute()
-                        left(0f); top(0f)
-                        width(ctx.viewAttr.size); height(ctx.viewAttr.size)
-                        applyOutgoingAnim(ctx)
-                    }
-                    qrCanvas(ctx, { ctx.currentText })
-                }
-
-                // ===== 过渡中的新码画布（仅 ANIMATING 时存在） =====
-                vif({ ctx.phase == QRRefreshPhase.ANIMATING && ctx.nextText != null }) {
+                // ===== SUCCESS：当前码画布（NONE 模式直接跟随 provider） =====
+                vif({ ctx.viewAttr.displayState == QRDisplayState.SUCCESS }) {
                     View {
                         attr {
                             positionAbsolute()
                             left(0f); top(0f)
                             width(ctx.viewAttr.size); height(ctx.viewAttr.size)
-                            applyIncomingAnim(ctx)
+                            applyOutgoingAnim(ctx)
                         }
-                        qrCanvas(ctx, { ctx.nextText ?: "" })
+                        qrCanvas(ctx) { if (ctx.viewAttr.transition == QRTransition.NONE) ctx.viewAttr.text else ctx.currentText }
+                    }
+
+                    // ===== 过渡层：检测到 provider 数据变化时插入新码画布（响应式，无轮询） =====
+                    vif({
+                        ctx.viewAttr.transition != QRTransition.NONE &&
+                            ctx.viewAttr.text.isNotEmpty() && ctx.viewAttr.text != ctx.currentText
+                    }) {
+                        addChild(QRTransitionLayer(ctx)) {}
                     }
                 }
 
-                // ===== LOADING 遮罩（仅 WAITING 且 LOADING 模式） =====
-                vif({ ctx.phase == QRRefreshPhase.WAITING && ctx.viewAttr.refreshAnimation == QRRefreshAnimation.LOADING }) {
+                // ===== LOADING =====
+                vif({ ctx.viewAttr.displayState == QRDisplayState.LOADING }) {
                     View {
                         attr {
                             positionAbsolute()
                             left(0f); top(0f)
                             width(ctx.viewAttr.size); height(ctx.viewAttr.size)
-                            backgroundColor(ctx.viewAttr.loadingMaskColor)
+                            backgroundColor(ctx.viewAttr.bgColor)
                             justifyContentCenter()
                             alignItemsCenter()
                         }
                         vif({ ctx.viewAttr.loadingView != null }) {
-                            View {
-                                attr { justifyContentCenter(); alignItemsCenter() }
-                                ctx.viewAttr.loadingView?.invoke(this)
-                            }
+                            ctx.viewAttr.loadingView?.invoke(this)
                         }
                         vif({ ctx.viewAttr.loadingView == null }) {
                             defaultLoadingView(ctx)
@@ -298,8 +279,48 @@ class QRCodeView : ComposeView<QRCodeViewAttr, QRCodeViewEvent>() {
                     }
                 }
 
-                // ===== 中心 logo 叠加（最上层，过渡期间保持） =====
-                vif({ !ctx.viewAttr.logoPath.isNullOrEmpty() }) {
+                // ===== EMPTY =====
+                vif({ ctx.viewAttr.displayState == QRDisplayState.EMPTY }) {
+                    View {
+                        attr {
+                            positionAbsolute()
+                            left(0f); top(0f)
+                            width(ctx.viewAttr.size); height(ctx.viewAttr.size)
+                            backgroundColor(ctx.viewAttr.bgColor)
+                            justifyContentCenter()
+                            alignItemsCenter()
+                        }
+                        vif({ ctx.viewAttr.emptyView != null }) {
+                            ctx.viewAttr.emptyView?.invoke(this)
+                        }
+                        vif({ ctx.viewAttr.emptyView == null }) {
+                            defaultPlaceholder(ctx, isEmpty = true)
+                        }
+                    }
+                }
+
+                // ===== ERROR =====
+                vif({ ctx.viewAttr.displayState == QRDisplayState.ERROR }) {
+                    View {
+                        attr {
+                            positionAbsolute()
+                            left(0f); top(0f)
+                            width(ctx.viewAttr.size); height(ctx.viewAttr.size)
+                            backgroundColor(ctx.viewAttr.bgColor)
+                            justifyContentCenter()
+                            alignItemsCenter()
+                        }
+                        vif({ ctx.viewAttr.errorView != null }) {
+                            ctx.viewAttr.errorView?.invoke(this)
+                        }
+                        vif({ ctx.viewAttr.errorView == null }) {
+                            defaultPlaceholder(ctx, isEmpty = false)
+                        }
+                    }
+                }
+
+                // ===== 中心 logo 叠加（仅 SUCCESS，最上层） =====
+                vif({ ctx.viewAttr.displayState == QRDisplayState.SUCCESS && !ctx.viewAttr.logoPath.isNullOrEmpty() }) {
                     val logoSize = if (ctx.viewAttr.logoSize > 0f) ctx.viewAttr.logoSize else ctx.viewAttr.size * 0.22f
                     val box = logoSize + ctx.viewAttr.logoPadding * 2f
                     val offset = (ctx.viewAttr.size - box) / 2f
@@ -328,105 +349,29 @@ class QRCodeView : ComposeView<QRCodeViewAttr, QRCodeViewEvent>() {
         }
     }
 
-    // ---------- 刷新驱动 ----------
+    // ---------- 过渡调度（由 QRTransitionLayer 插入时触发） ----------
 
-    /** 首帧同步展示文本 */
-    private fun ensureCurrentTextInitialized() {
-        if (currentText.isEmpty() && phase == QRRefreshPhase.IDLE) {
-            currentText = attr.text
-        }
-    }
-
-    private fun startCountdownIfNeeded() {
-        ensureCurrentTextInitialized()
-        if (attr.refreshIntervalSeconds > 0 && countdownTimer == null) {
-            secondsLeft = attr.refreshIntervalSeconds
-            countdownTimer = Timer().apply {
-                schedule(1000, 1000) {
-                    if (phase == QRRefreshPhase.IDLE) {
-                        secondsLeft--
-                        if (secondsLeft <= 0) {
-                            startRefresh()
-                        } else {
-                            event.onCountdown?.invoke(secondsLeft)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /**
-     * 手动触发一次刷新（也可等 refreshIntervalSeconds 自动到点）。
-     * 流程：触发 onRefresh → 轮询 textProvider 直到变化/超时 → 播放过渡动画。
-     */
-    fun refresh() {
-        if (phase != QRRefreshPhase.IDLE) return
-        startRefresh()
-    }
-
-    private fun startRefresh() {
-        pollOldText = currentText.ifEmpty { attr.text }
-        phase = QRRefreshPhase.WAITING
-        event.onRefresh?.invoke()
-        pollTicksLeft = (attr.refreshTimeoutMs / 100).coerceAtLeast(1)
-        pollTimer?.cancel()
-        pollTimer = Timer().apply {
-            schedule(100, 100) {
-                val latest = attr.text
-                if (latest.isNotEmpty() && latest != pollOldText) {
-                    cancelPoll()
-                    beginTransition(latest)
-                } else if (--pollTicksLeft <= 0) {
-                    // 超时未变化：放弃本次刷新，重启倒计时
-                    cancelPoll()
-                    finishRefresh(restartCountdown = true)
-                }
-            }
-        }
-    }
-
-    private fun beginTransition(newText: String) {
-        if (attr.refreshAnimation == QRRefreshAnimation.NONE) {
-            currentText = newText
-            finishRefresh(restartCountdown = true)
-            return
-        }
+    internal fun onTransitionLayerAdded() {
+        val seq = ++transitionSeq
         animActive = false
-        nextText = newText
-        phase = QRRefreshPhase.ANIMATING
         animKey += 1
         // 两步渲染：先让新画布以初始态（隐藏/下方）铺好，再激活动画
         pendingTimeouts += postDelayed(30) {
-            animActive = true
+            if (seq == transitionSeq) animActive = true
         }
-        pendingTimeouts += postDelayed(attr.refreshAnimationDurationMs + 120) {
-            commitTransition()
+        pendingTimeouts += postDelayed(attr.transitionDurationMs + 120) {
+            if (seq == transitionSeq) commitTransition()
         }
     }
 
     private fun commitTransition() {
-        nextText?.let { currentText = it }
-        nextText = null
+        currentText = attr.text
         animActive = false
-        phase = QRRefreshPhase.IDLE
-    }
-
-    private fun finishRefresh(restartCountdown: Boolean) {
-        phase = QRRefreshPhase.IDLE
-        if (restartCountdown) secondsLeft = attr.refreshIntervalSeconds
-    }
-
-    private fun cancelPoll() {
-        pollTimer?.cancel()
-        pollTimer = null
     }
 
     override fun didRemoveFromParentView() {
         super.didRemoveFromParentView()
-        countdownTimer?.cancel()
-        countdownTimer = null
-        cancelPoll()
+        transitionSeq++ // 使未决定时器全部失效
         pendingTimeouts.forEach { cancelPostCallback(it) }
         pendingTimeouts.clear()
     }
@@ -523,9 +468,42 @@ class QRCodeView : ComposeView<QRCodeViewAttr, QRCodeViewEvent>() {
     }
 }
 
+/**
+ * 过渡层容器：插入视图树时通知宿主组件启动过渡调度
+ * （Kuikly vif 重建会重新走 didMoveToParentView，天然去重）
+ */
+internal class QRTransitionLayer(
+    private val owner: QRCodeView,
+) : ComposeView<ComposeAttr, ComposeEvent>() {
+    override fun createAttr() = ComposeAttr()
+    override fun createEvent() = ComposeEvent()
+
+    override fun didMoveToParentView() {
+        super.didMoveToParentView()
+        if (parent != null) {
+            owner.onTransitionLayerAdded()
+        }
+    }
+
+    override fun body(): ViewBuilder {
+        val ctx = owner
+        return {
+            View {
+                attr {
+                    positionAbsolute()
+                    left(0f); top(0f)
+                    width(ctx.viewAttr.size); height(ctx.viewAttr.size)
+                    applyIncomingAnim(ctx)
+                }
+                qrCanvas(ctx) { ctx.viewAttr.text }
+            }
+        }
+    }
+}
+
 // ---------- 文件级绘制/动画辅助（Kotlin 成员扩展在非 inline DSL lambda 中不可用隐式接收者） ----------
 
-/** 渲染一张 QR 画布，内容取自 textProvider（过渡期分别绑定 currentText/nextText） */
+/** 渲染一张 QR 画布，内容取自 textProvider */
 private fun ViewContainer<*, *>.qrCanvas(
     ctx: QRCodeView,
     textProvider: () -> String,
@@ -597,14 +575,14 @@ private fun drawQrContent(
     context.fill()
 }
 
-/** 旧码：动画激活后淡出/上移出 */
+/** 旧码：过渡激活后淡出/上移出 */
 private fun com.tencent.kuikly.core.base.Attr.applyOutgoingAnim(ctx: QRCodeView) {
-    val animating = ctx.phase == QRRefreshPhase.ANIMATING && ctx.animActive
+    val animating = ctx.animActive
     val key = ctx.animKey
-    val dur = ctx.viewAttr.refreshAnimationDurationMs / 1000f
+    val dur = ctx.viewAttr.transitionDurationMs / 1000f
     when {
         !animating -> opacity(1f)
-        ctx.viewAttr.refreshAnimation == QRRefreshAnimation.SLIDE_VERTICAL -> {
+        ctx.viewAttr.transition == QRTransition.SLIDE_VERTICAL -> {
             transform(Translate(0f, -1f))
             animate(Animation.easeInOut(dur), key)
         }
@@ -615,18 +593,18 @@ private fun com.tencent.kuikly.core.base.Attr.applyOutgoingAnim(ctx: QRCodeView)
     }
 }
 
-/** 新码：初始隐藏，动画激活后淡入/从下方移入 */
+/** 新码：初始隐藏，过渡激活后淡入/自下方移入 */
 private fun com.tencent.kuikly.core.base.Attr.applyIncomingAnim(ctx: QRCodeView) {
     val active = ctx.animActive
     val key = ctx.animKey
-    val dur = ctx.viewAttr.refreshAnimationDurationMs / 1000f
+    val dur = ctx.viewAttr.transitionDurationMs / 1000f
     when {
-        !active -> if (ctx.viewAttr.refreshAnimation == QRRefreshAnimation.SLIDE_VERTICAL) {
+        !active -> if (ctx.viewAttr.transition == QRTransition.SLIDE_VERTICAL) {
             transform(Translate(0f, 1f)); opacity(1f)
         } else {
             opacity(0f)
         }
-        ctx.viewAttr.refreshAnimation == QRRefreshAnimation.SLIDE_VERTICAL -> {
+        ctx.viewAttr.transition == QRTransition.SLIDE_VERTICAL -> {
             transform(Translate(0f, 0f))
             animate(Animation.easeInOut(dur), key)
         }
@@ -662,6 +640,64 @@ private fun ViewContainer<*, *>.defaultLoadingView(ctx: QRCodeView) {
                 0f, PI.toFloat() * 1.5f, false,
             )
             context.stroke()
+        }
+    }
+}
+
+/** 默认空态/错误占位：Canvas 图形（虚线框 / 感叹号圆圈）+ 文案 */
+private fun ViewContainer<*, *>.defaultPlaceholder(ctx: QRCodeView, isEmpty: Boolean) {
+    val inner = ctx.viewAttr.size * 0.62f
+    View {
+        attr { justifyContentCenter(); alignItemsCenter() }
+        Canvas({
+            attr {
+                width(inner)
+                height(inner)
+                marginBottom(12f)
+            }
+        }) { context, width, height ->
+            context.strokeStyle(ctx.viewAttr.placeholderColor)
+            context.lineWidth(3f)
+            if (isEmpty) {
+                // 空态：虚线圆角框
+                context.setLineDash(listOf(8f, 6f))
+                context.beginPath()
+                val r = width * 0.12f
+                context.moveTo(r, 0f)
+                context.lineTo(width - r, 0f)
+                context.arc(width - r, r, r, PI.toFloat() * 1.5f, PI.toFloat() * 2f, false)
+                context.lineTo(width, height - r)
+                context.arc(width - r, height - r, r, 0f, PI.toFloat() * 0.5f, false)
+                context.lineTo(r, height)
+                context.arc(r, height - r, r, PI.toFloat() * 0.5f, PI.toFloat(), false)
+                context.lineTo(0f, r)
+                context.arc(r, r, r, PI.toFloat(), PI.toFloat() * 1.5f, false)
+                context.closePath()
+                context.stroke()
+            } else {
+                // 错误态：圆圈 + 感叹号
+                val cx = width / 2f
+                val cy = height / 2f
+                val r = width * 0.4f
+                context.beginPath()
+                context.arc(cx, cy, r, 0f, PI.toFloat() * 2f, false)
+                context.stroke()
+                context.beginPath()
+                context.lineCapRound()
+                context.lineWidth(5f)
+                context.moveTo(cx, cy - r * 0.45f)
+                context.lineTo(cx, cy + r * 0.1f)
+                context.moveTo(cx, cy + r * 0.45f)
+                context.lineTo(cx, cy + r * 0.42f)
+                context.stroke()
+            }
+        }
+        Text {
+            attr {
+                text(if (isEmpty) ctx.viewAttr.emptyText else ctx.viewAttr.errorText)
+                fontSize(ctx.viewAttr.size * 0.075f)
+                color(ctx.viewAttr.placeholderColor)
+            }
         }
     }
 }

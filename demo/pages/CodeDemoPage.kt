@@ -4,26 +4,76 @@ import com.kuikly.code.BarcodeFormat
 import com.kuikly.code.BarcodeView
 import com.kuikly.code.QRCodeShape
 import com.kuikly.code.QRCodeView
-import com.kuikly.code.QRRefreshAnimation
+import com.kuikly.code.QRDisplayState
+import com.kuikly.code.QRTransition
 import com.kuikly.code.engine.raw.ErrorCorrectionLevel
 import com.tencent.kuikly.core.annotations.Page
 import com.tencent.kuikly.core.base.BasePager
 import com.tencent.kuikly.core.base.Color
 import com.tencent.kuikly.core.base.ViewBuilder
 import com.tencent.kuikly.core.reactive.handler.observable
+import com.tencent.kuikly.core.timer.Timer
 import com.tencent.kuikly.core.views.Text
 import com.tencent.kuikly.core.views.View
 
 /**
  * kuikly-code 演示页
- * 展示二维码（方形/圆点/圆角/菱形/渐变/logo）与条形码（Code128 auto-B/C、EAN-13）
+ * 展示二维码（形状/渐变/logo/状态化/动态刷新）与条形码（Code128 auto-B/C、EAN-13）
+ *
+ * 动态刷新演示（0.4.0 架构）：轮换定时器与状态机在 Pager（业务侧），
+ * 组件只通过 textProvider/stateProvider 接收「数据 + 状态」。
  */
 @Page("code_demo")
 internal class CodeDemoPage : BasePager() {
 
-    /** 动态刷新演示：轮换码与倒计时文案（observable 驱动） */
+    // ── 业务侧状态机（宿主职责，组件不感知） ──
     private var rotatingCode: String by observable("PAY-2026-A1B2C3")
+    private var rotatingState: QRDisplayState by observable(QRDisplayState.SUCCESS)
     private var countdownText: String by observable("")
+
+    private var rotateTimer: Timer? = null
+    private var countdownTimer: Timer? = null
+    private var secondsLeft = 15
+
+    override fun viewDidAppear() {
+        super.viewDidAppear()
+        startRotation()
+    }
+
+    override fun viewWillDisappear() {
+        super.viewWillDisappear()
+        rotateTimer?.cancel()
+        countdownTimer?.cancel()
+    }
+
+    /** 轮换节奏业务自管：15 秒一轮，取数 800ms 模拟网络 */
+    private fun startRotation() {
+        secondsLeft = 15
+        countdownTimer?.cancel()
+        countdownTimer = Timer().apply {
+            schedule(1000, 1000) {
+                secondsLeft--
+                countdownText = if (secondsLeft > 0) "${secondsLeft}s 后自动更新" else "更新中..."
+                if (secondsLeft <= 0) cancel()
+            }
+        }
+        rotateTimer?.cancel()
+        rotateTimer = Timer().apply {
+            schedule(15_000, 15_000) {
+                fetchNewCode()
+            }
+        }
+    }
+
+    private fun fetchNewCode() {
+        rotatingState = QRDisplayState.LOADING
+        // 模拟异步取码（实际为网络请求）
+        com.tencent.kuikly.core.timer.postDelayed(800) {
+            rotatingCode = "PAY-2026-" + kotlin.random.Random.nextInt(100000, 999999)
+            rotatingState = QRDisplayState.SUCCESS
+            secondsLeft = 15
+        }
+    }
 
     override fun body(): ViewBuilder {
         val ctx = this
@@ -56,45 +106,25 @@ internal class CodeDemoPage : BasePager() {
                         errorCorrectionLevel = ErrorCorrectionLevel.HIGH
                         logoPath = "common/images/logo.png"
                     }
-                    event {
-                        error { code, msg -> /* 兜底 UI */ }
-                    }
                 }
 
-                // ===== 二维码：菱形 + 渐变 + 版本下限（尺寸稳定） =====
-                QRCodeView {
-                    attr {
-                        textProvider = { "https://kuikly.tds.qq.com" }
-                        size = 200f
-                        marginTop(24f)
-                        shape = QRCodeShape.DIAMOND
-                        useGradient = true
-                        gradientStartColor = Color(0xFF0052D9)
-                        gradientEndColor = Color(0xFF7B61FF)
-                        minVersion = 4
-                    }
-                }
-
-                // ===== 二维码：动态刷新（15 秒轮换 + Loading 转场 + 倒计时） =====
+                // ===== 二维码：状态化 + 动态刷新（业务侧定时器驱动） =====
                 QRCodeView {
                     attr {
                         textProvider = { ctx.rotatingCode }
+                        stateProvider = { ctx.rotatingState }
                         size = 200f
                         marginTop(24f)
-                        refreshIntervalSeconds = 15
-                        refreshAnimation = QRRefreshAnimation.LOADING
+                        transition = QRTransition.CROSS_FADE
+                        // emptyView / errorView / loadingView 均可注入自定义视图
                     }
                     event {
-                        refresh {
-                            // 模拟取新码（实际为网络请求）；组件轮询 textProvider 检测变化
-                            ctx.rotatingCode = "PAY-2026-" + kotlin.random.Random.nextInt(100000, 999999)
-                        }
-                        countdown { s -> ctx.countdownText = "${s}s 后自动更新" }
+                        error { _, _ -> /* 兜底 UI */ }
                     }
                 }
                 Text {
                     attr {
-                        text(countdownText)
+                        text(ctx.countdownText)
                         fontSize(24f)
                         color(Color(0xFF999999))
                         marginTop(12f)

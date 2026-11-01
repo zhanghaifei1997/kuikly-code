@@ -16,10 +16,12 @@ Code 128-B/C 编码器与 EAN-13 编码器（编码表均对照 zxing / ISO 标�
 - **中心 logo 叠加**（白底圆角卡片，建议配合 HIGH 级纠错）
 - **掩码自动最优选择**（ISO 18004 惩罚分规则评估 8 种掩码，可指定覆盖）
 - `minVersion` 版本下限（防止文本变短时二维码尺寸跳变）
-- **动态刷新（0.3.0+，付款码轮换）**：定时到点回调宿主取新码，自动轮询检测数据更新，
-  四种过渡动画（直接切换 / 交叉淡化 / 上下推移 / Loading 转场，loading 可自定义）
+- **动态刷新（0.4.0+，付款码轮换）**：组件只管展示——`textProvider` 数据变化自动重绘，
+  SUCCESS 态变化时双画布过渡动画（直接切换 / 交叉淡化 / 上下推移，响应式检测无轮询）
+- **四态展示（0.4.0+）**：`stateProvider` 传入 `SUCCESS` / `LOADING` / `EMPTY` / `ERROR`，
+  各态可注入自定义视图（`loadingView` / `emptyView` / `errorView`），取数/重试/轮换定时器由宿主业务自管
 - 四纠错级别（L/M/H/Q）与标准静区（默认 4 模块，可配）
-- `textProvider` 响应式刷新、`onError` 事件
+- `onError` 事件
 
 ### BarcodeView（条形码）
 
@@ -51,7 +53,7 @@ repositories {
 }
 
 dependencies {
-    implementation("io.github.zhanghaifei1997:kuiklyCode:0.3.0")
+    implementation("io.github.zhanghaifei1997:kuiklyCode:0.4.0")
 }
 ```
 
@@ -101,25 +103,35 @@ BarcodeView {
 }
 ```
 
-### 动态刷新（0.3.0+，付款码轮换）
+### 动态刷新与状态展示（0.4.0+，付款码轮换）
+
+组件只负责展示：**取数、重试、轮换定时器由宿主业务自管**，通过响应式 Provider 传入「数据 + 状态」。
 
 ```kotlin
+// ── ViewModel（业务侧，示意）──────────────────────────
+// val state = observable(QRDisplayState.LOADING)   // 状态机
+// val payCode = observable("")
+// fun rotate() { state = LOADING; api.fetch { code -> payCode = code; state = SUCCESS } ... }
+// fun start() { postDelayed(60_000) { rotate(); start() } }   // 轮换节奏业务自定
+
+// ── 视图（组件侧）────────────────────────────────────
 QRCodeView {
     attr {
-        textProvider = { viewModel.payCode }
-        refreshIntervalSeconds = 60                      // 60 秒自动轮换
-        refreshAnimation = QRRefreshAnimation.LOADING    // 直接切换/交叉淡化/上下推移/Loading
-        refreshAnimationDurationMs = 350
-        // loadingView = { Text { attr { text("加载中...") } } }   // 自定义 loading（可选）
+        textProvider = { vm.payCode }
+        stateProvider = { vm.state }                 // SUCCESS/LOADING/EMPTY/ERROR
+        transition = QRTransition.CROSS_FADE         // SUCCESS 数据变化时的过渡动画
+        // emptyView = { YourEmptyView() }            // 空态自定义（可选）
+        // errorView = { YourRetryView() }            // 异常态自定义，重试按钮放这里（可选）
     }
     event {
-        refresh { viewModel.fetchNewPayCode() }           // 到点取新码（可异步）
-        countdown { s -> viewModel.countdownText = "${s}s 后自动更新" }
-        error { code, msg -> viewModel.showFallback() }
+        error { code, msg -> vm.onQrEncodeError() }
     }
 }
-// 也可随时手动触发：qrCodeView.refresh()
 ```
+
+- 数据变化 → 自动重绘；配置过渡动画时旧码/新码双画布交叉（响应式检测，无轮询）
+- LOADING：默认旋转圆弧 loading（`loadingView` 可注入任意自定义效果）
+- EMPTY / ERROR：默认 Canvas 占位图形+文案，`emptyView` / `errorView` 可整体替换
 
 ## API
 
@@ -140,10 +152,11 @@ QRCodeView {
 | maskPattern | MaskPattern? | null | 指定掩码；null=自动最优（0.2.0+） |
 | logoPath / logoSize | String? / Float | null/0 | 中心 logo；size 0=自动 22%（0.2.0+） |
 | logoPadding / logoCornerRadius / logoBgColor | - | 4/0/白 | logo 白底卡片样式 |
-| refreshIntervalSeconds | Int | 0 | 自动刷新间隔秒数，0=关闭（0.3.0+） |
-| refreshAnimation | QRRefreshAnimation | CROSS_FADE | NONE/CROSS_FADE/SLIDE_VERTICAL/LOADING（0.3.0+） |
-| refreshAnimationDurationMs / refreshTimeoutMs | Int | 350/10000 | 过渡时长 / 等待新内容超时 |
-| loadingView / loadingMaskColor | builder / Color | null/白 80% | 自定义 loading 视图 / 遮罩色 |
+| stateProvider | `(() -> QRDisplayState)?` | null(=SUCCESS) | 展示状态（SUCCESS/LOADING/EMPTY/ERROR，0.4.0+） |
+| transition | QRTransition | CROSS_FADE | 数据更新过渡：NONE/CROSS_FADE/SLIDE_VERTICAL（0.4.0+） |
+| transitionDurationMs | Int | 350 | 过渡时长 |
+| loadingView / emptyView / errorView | builder? | null | 各状态自定义视图（重试按钮等自行实现） |
+| emptyText / errorText / placeholderColor | - | 暂无内容/加载失败/灰 | 默认占位样式 |
 
 ### BarcodeViewAttr
 
