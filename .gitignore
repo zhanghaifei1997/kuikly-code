@@ -1,0 +1,13 @@
+.gradle/
+build/
+local.properties
+*.gpg
+*.asc
+.DS_Store
+.idea/
+*.iml
+.mimosa/
+kotlin-js-store/
+node_modules/
+staging-repo/
+bundle.zip
