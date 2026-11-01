@@ -2,26 +2,31 @@
 
 Kuikly 二维码 / 条形码渲染组件 —— 纯 Kotlin common 实现，一套代码跨 Android / iOS / 鸿蒙 / Web。
 
-基于经典 Kuikly DSL（`com.tencent.kuikly.core`）的 `Canvas` 绘制，内置 QR 编码引擎（qrcode-kotlin 血统，MIT）与
-Code 128-B 编码器（编码表对照 zxing / ISO 15417 逐条校验），**完全本地生成，无网络、无原生依赖**。
+基于经典 Kuikly DSL（`com.tencent.kuikly.core`）的 `Canvas` 绘制，内置 QR 编码引擎（qrcode-kotlin 血统，MIT）、
+Code 128-B/C 编码器与 EAN-13 编码器（编码表均对照 zxing / ISO 标准逐条校验），
+**完全本地生成，无网络、无原生依赖**。
 
 ## 功能特性
 
 ### QRCodeView（二维码）
 
 - 纯 Canvas 绘制，四端渲染一致
-- 模块形状：方形 / 圆点 / 圆角方形
+- 模块形状：方形 / 圆点 / 圆角方形 / 菱形
 - 前景支持纯色与线性渐变；定位图案可强制保持方形（保证扫码定位）
+- **中心 logo 叠加**（白底圆角卡片，建议配合 HIGH 级纠错）
+- **掩码自动最优选择**（ISO 18004 惩罚分规则评估 8 种掩码，可指定覆盖）
+- `minVersion` 版本下限（防止文本变短时二维码尺寸跳变）
 - 四纠错级别（L/M/H/Q）与标准静区（默认 4 模块，可配）
-- `textProvider` 响应式刷新
+- `textProvider` 响应式刷新、`onError` 事件
 
 ### BarcodeView（条形码）
 
-- Code 128-B 子集，支持 ASCII 32~126（数字/字母/常见符号）
-- 编码表对照 zxing `Code128Reader.CODE_PATTERNS` 逐条校验，校验和按 ISO 15417 计算
+- **Code 128**：数字段自动切换 Code C（密度约翻倍，可关），校验和按 ISO 15417
+- **EAN-13**：12 位自动补校验位 / 13 位严格校验，零售商品码标配
+- 编码表对照 zxing（`Code128Reader` / `UPCEANReader` / `EAN13Reader`）逐条校验
 - 标准静区（默认 10 模块，可配）
-- 可选人眼可读文本行（字号/颜色/间距可配）
-- 超出字符集时安全跳过绘制（不崩溃）
+- 人眼可读文本行 Canvas 绘制（EAN-13 为经典三段式布局）
+- 非法输入触发 `onError` 事件并安全跳过绘制（不崩溃）
 
 ## 平台支持
 
@@ -44,35 +49,51 @@ repositories {
 }
 
 dependencies {
-    implementation("io.github.zhanghaifei1997:kuiklyCode:0.1.0")
+    implementation("io.github.zhanghaifei1997:kuiklyCode:0.2.0")
 }
 ```
 
 纯视图组件，**无需注册任何原生模块**，直接在页面中使用：
 
 ```kotlin
+import com.kuikly.code.BarcodeFormat
 import com.kuikly.code.BarcodeView
 import com.kuikly.code.QRCodeShape
 import com.kuikly.code.QRCodeView
 
-// 二维码：圆点风格 + 渐变
+// 二维码：圆点风格 + 渐变 + 中心 logo（建议 HIGH 纠错）
 QRCodeView {
     attr {
-        textProvider = { viewModel.payCode }   // 响应式
+        textProvider = { viewModel.payUrl }    // 响应式
         size = 248f
         shape = QRCodeShape.CIRCLE
         useGradient = true
         gradientStartColor = Color(0xFF0052D9)
         gradientEndColor = Color(0xFF7B61FF)
+        errorCorrectionLevel = ErrorCorrectionLevel.HIGH
+        logoPath = "logo.png"                  // 中心 logo（0.2.0+）
+    }
+    event {
+        error { code, msg -> /* 兜底 UI */ }
     }
 }
 
-// 条形码：Code 128-B + 人眼可读文本
+// 条形码：Code 128（数字段自动切 C，密度翻倍）+ 人眼可读文本
 BarcodeView {
     attr {
         textProvider = { viewModel.payCode }
         barcodeWidth = 320f
         barcodeHeight = 90f
+        showText = true
+    }
+}
+
+// EAN-13 零售商品码（0.2.0+）：12 位自动补校验位
+BarcodeView {
+    attr {
+        textProvider = { "690102818029" }
+        format = BarcodeFormat.EAN13
+        barcodeWidth = 320f
         showText = true
     }
 }
@@ -88,18 +109,24 @@ BarcodeView {
 | size | Float | 248 | 宽=高 |
 | foregroundColor / bgColor | Color | 黑/白 | 前景/背景 |
 | errorCorrectionLevel | ErrorCorrectionLevel | MEDIUM | L/M/H/VERY_HIGH |
-| shape | QRCodeShape | SQUARE | SQUARE / CIRCLE / ROUND_RECT |
+| shape | QRCodeShape | SQUARE | SQUARE / CIRCLE / ROUND_RECT / DIAMOND |
 | roundRectRadiusRatio | Float | 0.3 | 圆角比例（仅 ROUND_RECT） |
 | useGradient + gradientStart/EndColor | Boolean/Color | false | 线性渐变前景 |
 | probeSquareStyle | Boolean | true | 定位图案保持方形 |
 | quietZoneModules | Int | 4 | 静区模块数（ISO 建议 4） |
+| minVersion | Int | 1 | 版本下限（防尺寸跳变，0.2.0+） |
+| maskPattern | MaskPattern? | null | 指定掩码；null=自动最优（0.2.0+） |
+| logoPath / logoSize | String? / Float | null/0 | 中心 logo；size 0=自动 22%（0.2.0+） |
+| logoPadding / logoCornerRadius / logoBgColor | - | 4/0/白 | logo 白底卡片样式 |
 
 ### BarcodeViewAttr
 
 | 属性 | 类型 | 默认 | 说明 |
 |---|---|---|---|
-| textProvider | `(() -> String)?` | null | 编码文本（仅 ASCII 32~126） |
-| barcodeWidth / barcodeHeight | Float | 650/120 | 条码区域尺寸 |
+| textProvider | `(() -> String)?` | null | 编码文本 |
+| format | BarcodeFormat | CODE128 | CODE128 / EAN13（0.2.0+） |
+| autoSubset | Boolean | true | Code128 数字段自动切 C（0.2.0+） |
+| barcodeWidth / barcodeHeight | Float | 650/120 | 条码区域尺寸（高度不含文本行） |
 | foregroundColor / bgColor | Color | 黑/白 | 条/空颜色 |
 | quietZoneModules | Int | 10 | 静区模块数（ISO 建议 10） |
 | showText | Boolean | false | 显示人眼可读文本 |
@@ -109,11 +136,19 @@ BarcodeView {
 
 ```kotlin
 // QR：富元数据矩阵（含方块类型：定位/校正/定时/数据，可用于自定义渲染）
-val matrix = QRCodeEngine.encode("Hello", ErrorCorrectionLevel.HIGH)
+// maskPattern=null 自动最优掩码；minVersion 版本下限
+val matrix = QRCodeEngine.encode("Hello", ErrorCorrectionLevel.HIGH, null, minVersion = 3)
 val bools = QRCodeEngine.encodeToBooleanMatrix("Hello")
 
-// Code 128-B：条/空模块序列（true=黑条）
+// Code 128-B（纯 B 子集）
 val bars = Code128Encoder.encode("ABC123")
+// Code 128 自动 B/C 混合（数字段密度翻倍，zxing 同款策略）
+val dense = Code128Encoder.encodeAuto("ABC123456DEF")
+
+// EAN-13：12 位补校验位 / 13 位校验
+val ean = EAN13Encoder.encode("690102818029")     // → 6901028180297
+val check = EAN13Encoder.calcCheckDigit("690102818029")  // → 7
+val ok = EAN13Encoder.isValid("6901028180297")    // → true
 ```
 
 ## 鸿蒙接入
@@ -146,8 +181,8 @@ val bars = Code128Encoder.encode("ABC123")
 ./gradlew :kuiklyCode:iosSimulatorArm64Test   # 或 jsNodeTest
 ```
 
-覆盖：Code128 编码表 vs zxing 全量对照、校验和独立复算、完整编码向量、QR 矩阵结构不变量
-（定位/定时图案、版本尺寸、确定性、纠错级别差异、UTF-8）。
+覆盖：Code128 编码表 vs zxing 全量对照、auto B/C 混合手算向量、EAN-13 表形/双源对照/校验位向量/结构布局、
+QR 矩阵结构不变量（定位/定时图案、版本尺寸、确定性、纠错级别差异、UTF-8）、掩码惩罚分与最优性。
 
 ## 许可证
 

@@ -6,11 +6,19 @@ import com.tencent.kuikly.core.base.ComposeEvent
 import com.tencent.kuikly.core.base.ComposeView
 import com.tencent.kuikly.core.base.ViewBuilder
 import com.tencent.kuikly.core.base.ViewContainer
-import com.tencent.kuikly.core.directives.vif
 import com.tencent.kuikly.core.views.Canvas
 import com.tencent.kuikly.core.views.CanvasContext
-import com.tencent.kuikly.core.views.Text
-import com.tencent.kuikly.core.views.View
+import com.tencent.kuikly.core.views.TextAlign
+
+/**
+ * 条码制式
+ */
+enum class BarcodeFormat {
+    /** Code 128-B（默认；autoSubset 开启时数字段自动切 Code C） */
+    CODE128,
+    /** EAN-13（零售商品码，12 位自动补校验位 / 13 位校验） */
+    EAN13,
+}
 
 /**
  * BarcodeView 属性
@@ -23,10 +31,16 @@ class BarcodeViewAttr : ComposeAttr() {
     val text: String
         get() = textProvider?.invoke() ?: ""
 
-    /** 条形码区域宽度（不含人眼可读文本行） */
+    /** 条码制式 */
+    var format: BarcodeFormat = BarcodeFormat.CODE128
+
+    /** Code 128：数字段自动切换 Code C（密度翻倍，0.2.0+ 默认开） */
+    var autoSubset: Boolean = true
+
+    /** 条码区域宽度 */
     var barcodeWidth: Float = 650f
 
-    /** 条形码区域高度 */
+    /** 条码区域高度（条码主体，不含文本行） */
     var barcodeHeight: Float = 120f
 
     /** 前景色（条码颜色） */
@@ -35,10 +49,10 @@ class BarcodeViewAttr : ComposeAttr() {
     /** 背景色 */
     var bgColor: Color = Color.WHITE
 
-    /** 左右静区宽度（模块数）。ISO 15417 建议 10X，设 0 可关闭（不建议） */
+    /** 左右静区宽度（模块数）。Code128 建议 10X、EAN13 建议 ≥7X，设 0 可关闭（不建议） */
     var quietZoneModules: Int = 10
 
-    /** 是否在条码下方绘制人眼可读文本 */
+    /** 是否在条码下方绘制人眼可读文本（Canvas 绘制，EAN13 为经典三段式） */
     var showText: Boolean = false
 
     /** 人眼可读文本字号 */
@@ -54,22 +68,33 @@ class BarcodeViewAttr : ComposeAttr() {
 /**
  * BarcodeView 事件
  */
-class BarcodeViewEvent : ComposeEvent()
+class BarcodeViewEvent : ComposeEvent() {
+    /** 编码失败回调：code 1=文本为空, 2=编码异常（非法字符/校验位错误等） */
+    internal var onError: ((code: Int, message: String) -> Unit)? = null
+
+    fun error(callback: (code: Int, message: String) -> Unit) {
+        onError = callback
+    }
+}
 
 /**
- * 条形码视图组件（Code 128-B，纯 Canvas 绘制，跨端一致）
+ * 条形码视图组件（纯 Canvas 绘制，跨端一致，0.2.0 支持 EAN-13 与 Code 128-C 混合）
  *
- * - 完全本地生成，无网络、无原生依赖
+ * - Code 128：数字段自动切 Code C（可关），完全本地生成
+ * - EAN-13：12 位自动补校验位，13 位严格校验，人眼可读文本为经典三段式布局
  * - 内置标准静区（默认 10 模块，可配），保证扫码器识别率
- * - 可选人眼可读文本行
  *
  * ```kotlin
  * BarcodeView {
  *     attr {
- *         textProvider = { "1234567890" }
- *         barcodeWidth = 650f
+ *         textProvider = { "6901028180297" }
+ *         format = BarcodeFormat.EAN13
+ *         barcodeWidth = 320f
  *         barcodeHeight = 120f
  *         showText = true
+ *     }
+ *     event {
+ *         error { code, msg -> /* 兜底 UI */ }
  *     }
  * }
  * ```
@@ -82,70 +107,92 @@ class BarcodeView : ComposeView<BarcodeViewAttr, BarcodeViewEvent>() {
     override fun body(): ViewBuilder {
         val ctx = this
         return {
-            View {
+            val textRowHeight =
+                if (ctx.attr.showText) ctx.attr.textMarginTop + ctx.attr.textFontSize * 1.2f else 0f
+
+            Canvas({
                 attr {
-                    flexDirectionColumn()
-                    alignItemsCenter()
+                    width(ctx.attr.barcodeWidth)
+                    height(ctx.attr.barcodeHeight + textRowHeight)
+                }
+            }) { context, width, height ->
+                val text = ctx.attr.text
+                if (text.isEmpty()) {
+                    ctx.event.onError?.invoke(ERROR_EMPTY_TEXT, "文本为空，跳过绘制")
+                    return@Canvas
                 }
 
-                Canvas({
-                    attr {
-                        width(ctx.attr.barcodeWidth)
-                        height(ctx.attr.barcodeHeight)
-                    }
-                }) { context, width, height ->
-                    val text = ctx.attr.text
-                    if (text.isEmpty()) return@Canvas
+                try {
+                    when (ctx.attr.format) {
+                        BarcodeFormat.CODE128 -> {
+                            val encoded = if (ctx.attr.autoSubset) {
+                                Code128Encoder.encodeAuto(text)
+                            } else {
+                                Code128Encoder.encode(text)
+                            }
+                            drawBarcode(
+                                context, encoded, width,
+                                ctx.attr.barcodeHeight, ctx.attr.quietZoneModules,
+                                ctx.attr.foregroundColor, ctx.attr.bgColor,
+                            )
+                            if (ctx.attr.showText) {
+                                drawCenteredText(
+                                    context, text, width, ctx.attr.barcodeHeight,
+                                    ctx.attr.textMarginTop, ctx.attr.textFontSize, ctx.attr.textColor,
+                                )
+                            }
+                        }
 
-                    try {
-                        val encoded = Code128Encoder.encode(text)
-                        drawBarcode(
-                            context, encoded, width, height,
-                            ctx.attr.quietZoneModules,
-                            ctx.attr.foregroundColor, ctx.attr.bgColor
-                        )
-                    } catch (_: IllegalArgumentException) {
-                        // 含 Code B 不支持的字符时不绘制
-                    }
-                }
-
-                vif({ ctx.attr.showText }) {
-                    Text {
-                        attr {
-                            text(ctx.attr.text)
-                            fontSize(ctx.attr.textFontSize)
-                            color(ctx.attr.textColor)
-                            marginTop(ctx.attr.textMarginTop)
-                            width(ctx.attr.barcodeWidth)
-                            textAlignCenter()
+                        BarcodeFormat.EAN13 -> {
+                            val encoded = EAN13Encoder.encode(text)
+                            drawBarcode(
+                                context, encoded, width,
+                                ctx.attr.barcodeHeight, ctx.attr.quietZoneModules,
+                                ctx.attr.foregroundColor, ctx.attr.bgColor,
+                            )
+                            if (ctx.attr.showText) {
+                                drawEan13Text(
+                                    context, text, width, ctx.attr.barcodeHeight,
+                                    encoded.size + 2f * ctx.attr.quietZoneModules, ctx.attr.quietZoneModules.toFloat(),
+                                    ctx.attr.textMarginTop, ctx.attr.textFontSize, ctx.attr.textColor,
+                                )
+                            }
                         }
                     }
+                } catch (e: IllegalArgumentException) {
+                    ctx.event.onError?.invoke(ERROR_ENCODE, e.message ?: "编码失败")
                 }
             }
         }
     }
 
     companion object {
+        /** 错误码：文本为空 */
+        const val ERROR_EMPTY_TEXT = 1
+
+        /** 错误码：编码异常（非法字符/校验位错误等） */
+        const val ERROR_ENCODE = 2
+
         /**
-         * 绘制条形码：黑条序列 + 标准静区
+         * 绘制条码主体：黑条序列 + 标准静区，条码区域高度为 barsHeight
          * 模块宽度 = 宽度 / (总模块数 + 2×静区)
          */
         private fun drawBarcode(
             context: CanvasContext,
             encoded: BooleanArray,
             width: Float,
-            height: Float,
+            barsHeight: Float,
             quietZoneModules: Int,
             foregroundColor: Color,
             bgColor: Color,
         ) {
-            // 绘制背景
+            // 绘制背景（覆盖整个条码区域，不覆盖文本行，避免文字压在色块上）
             context.fillStyle(bgColor)
             context.beginPath()
             context.moveTo(0f, 0f)
             context.lineTo(width, 0f)
-            context.lineTo(width, height)
-            context.lineTo(0f, height)
+            context.lineTo(width, barsHeight)
+            context.lineTo(0f, barsHeight)
             context.closePath()
             context.fill()
 
@@ -161,11 +208,58 @@ class BarcodeView : ComposeView<BarcodeViewAttr, BarcodeViewEvent>() {
                 val x = offsetX + i * moduleWidth
                 context.moveTo(x, 0f)
                 context.lineTo(x + moduleWidth, 0f)
-                context.lineTo(x + moduleWidth, height)
-                context.lineTo(x, height)
+                context.lineTo(x + moduleWidth, barsHeight)
+                context.lineTo(x, barsHeight)
                 context.closePath()
             }
             context.fill()
+        }
+
+        /** Code 128 整体居中文本 */
+        private fun drawCenteredText(
+            context: CanvasContext,
+            text: String,
+            width: Float,
+            barsHeight: Float,
+            marginTop: Float,
+            fontSize: Float,
+            color: Color,
+        ) {
+            context.fillStyle(color)
+            context.font(fontSize)
+            context.textAlign(TextAlign.CENTER)
+            context.fillText(text, width / 2f, barsHeight + marginTop + fontSize * 0.9f)
+        }
+
+        /**
+         * EAN-13 经典三段式文本：首位在左静区、左 6 位居左半、右 6 位居右半
+         * 段中心与对应模块区间对齐
+         */
+        private fun drawEan13Text(
+            context: CanvasContext,
+            text: String,
+            width: Float,
+            barsHeight: Float,
+            totalUnits: Float,
+            quietZone: Float,
+            marginTop: Float,
+            fontSize: Float,
+            color: Color,
+        ) {
+            val digits = if (text.length == 12) text + EAN13Encoder.calcCheckDigit(text) else text
+            val moduleWidth = width / totalUnits
+            val baseline = barsHeight + marginTop + fontSize * 0.9f
+
+            context.fillStyle(color)
+            context.font(fontSize)
+            context.textAlign(TextAlign.CENTER)
+
+            // 首位：左静区中央
+            context.fillText(digits[0].toString(), quietZone * moduleWidth / 2f, baseline)
+            // 左 6 位（d2..d7）：数据区 3..44 模块的中心
+            context.fillText(digits.substring(1, 7), (quietZone + 3f + 21f) * moduleWidth, baseline)
+            // 右 6 位（d8..d13）：数据区 50..91 模块的中心
+            context.fillText(digits.substring(7, 13), (quietZone + 50f + 21f) * moduleWidth, baseline)
         }
     }
 }

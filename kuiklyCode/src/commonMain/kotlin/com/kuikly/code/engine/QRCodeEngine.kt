@@ -3,6 +3,7 @@ package com.kuikly.code.engine
 import com.kuikly.code.engine.internals.QRCodeSquare
 import com.kuikly.code.engine.internals.QRCodeSquareType
 import com.kuikly.code.engine.raw.ErrorCorrectionLevel
+import com.kuikly.code.engine.raw.MaskPattern
 import com.kuikly.code.engine.raw.QRCodeProcessor
 import com.kuikly.code.engine.raw.QRCodeRawData
 
@@ -35,9 +36,23 @@ object QRCodeEngine {
     fun encode(
         text: String,
         errorCorrectionLevel: ErrorCorrectionLevel = ErrorCorrectionLevel.MEDIUM,
+    ): QRCodeRawData =
+        encode(text, errorCorrectionLevel, maskPattern = null, minVersion = 1)
+
+    /**
+     * 带选项编码（0.2.0+）
+     *
+     * @param maskPattern 指定掩码；null = 自动选择惩罚分最低的最优掩码（ISO 18004 规则）
+     * @param minVersion 版本下限（1-40），用于固定最小矩阵尺寸（防止文本变短时二维码跳变缩小）
+     */
+    fun encode(
+        text: String,
+        errorCorrectionLevel: ErrorCorrectionLevel,
+        maskPattern: MaskPattern?,
+        minVersion: Int = 1,
     ): QRCodeRawData {
         val processor = QRCodeProcessor(text, errorCorrectionLevel)
-        return processor.encode()
+        return processor.encodeWithOptions(maskPattern, minVersion)
     }
 
     /**
@@ -66,9 +81,18 @@ object QRCodeEngine {
     fun getModuleCount(
         text: String,
         errorCorrectionLevel: ErrorCorrectionLevel = ErrorCorrectionLevel.MEDIUM,
+    ): Int = getModuleCount(text, errorCorrectionLevel, minVersion = 1)
+
+    /**
+     * 获取矩阵尺寸（模块数，含版本下限）
+     */
+    fun getModuleCount(
+        text: String,
+        errorCorrectionLevel: ErrorCorrectionLevel = ErrorCorrectionLevel.MEDIUM,
+        minVersion: Int,
     ): Int {
         val type = QRCodeProcessor.infoDensityForDataAndECL(text, errorCorrectionLevel)
-        return type * 4 + 17
+        return maxOf(type, minVersion.coerceIn(1, QRCodeProcessor.MAXIMUM_INFO_DENSITY)) * 4 + 17
     }
 
     /**

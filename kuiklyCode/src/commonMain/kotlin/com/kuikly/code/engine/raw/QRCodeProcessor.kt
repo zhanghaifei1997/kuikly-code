@@ -78,8 +78,7 @@ class QRCodeProcessor(
     fun encode(
         type: Int = infoDensityForDataAndECL(data, errorCorrectionLevel),
         maskPattern: MaskPattern = MaskPattern.PATTERN000,
-    ): QRCodeRawData {
-        val moduleCount = type * 4 + 17
+    ): QRCodeRawData {        val moduleCount = type * 4 + 17
         val modules: Array<Array<QRCodeSquare?>> = Array(moduleCount) { Array(moduleCount) { null } }
 
         setupTopLeftPositionProbePattern(modules)
@@ -102,6 +101,44 @@ class QRCodeProcessor(
             }
         }
     }
+
+    /**
+     * 带选项编码：自动最优掩码 + 版本下限
+     *
+     * @param maskPattern 指定掩码；null = 在 8 种掩码中自动选择惩罚分最低者
+     * @param minVersion 版本下限（1-40），防止短文本时矩阵尺寸过小/跳变
+     */
+    fun encodeWithOptions(
+        maskPattern: MaskPattern? = null,
+        minVersion: Int = 1,
+    ): QRCodeRawData {
+        val autoType = infoDensityForDataAndECL(data, errorCorrectionLevel)
+        val type = maxOf(autoType, minVersion.coerceIn(1, MAXIMUM_INFO_DENSITY))
+        return if (maskPattern != null) {
+            encode(type, maskPattern)
+        } else {
+            encode(type, bestMaskPattern(type))
+        }
+    }
+
+    /**
+     * 按 ISO 惩罚分规则在 8 种掩码中选择最优者（分数最低）
+     */
+    fun bestMaskPattern(type: Int): MaskPattern {
+        var best = MaskPattern.PATTERN000
+        var bestScore = Int.MAX_VALUE
+        for (mask in MaskPattern.entries) {
+            val score = MaskEvaluator.penaltyScore(toBooleanMatrix(encode(type, mask)))
+            if (score < bestScore) {
+                bestScore = score
+                best = mask
+            }
+        }
+        return best
+    }
+
+    private fun toBooleanMatrix(data: QRCodeRawData): Array<BooleanArray> =
+        Array(data.size) { r -> BooleanArray(data[r].size) { c -> data[r][c].dark } }
 
     private fun createData(type: Int): IntArray {
         val rsBlocks = RSBlock.getRSBlocks(type, errorCorrectionLevel)

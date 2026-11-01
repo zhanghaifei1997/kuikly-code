@@ -16,6 +16,15 @@ object Code128Encoder {
     /** Code B 起始符 value（104，pattern 211214） */
     const val CODE_START_B = 104
 
+    /** Code C 起始符 value（105，纯数字双密度模式） */
+    const val CODE_START_C = 105
+
+    /** 子集切换符：Code B → Code C（value 99） */
+    const val CODE_CODE_C = 99
+
+    /** 子集切换符：Code C → Code B（value 100） */
+    const val CODE_CODE_B = 100
+
     /** 停止符 value（106，pattern 2331112，7 个元素） */
     const val CODE_STOP = 106
 
@@ -55,16 +64,7 @@ object Code128Encoder {
      * @throws IllegalArgumentException 文本含 Code B 字符集之外的字符或为空
      */
     fun encode(text: String): BooleanArray {
-        if (text.isEmpty()) {
-            throw IllegalArgumentException("Code 128: 文本不能为空")
-        }
-        for (c in text) {
-            if (c.code < MIN_CHAR || c.code > MAX_CHAR) {
-                throw IllegalArgumentException(
-                    "Code 128-B 不支持字符 '$c' (ASCII ${c.code})，仅支持 ASCII $MIN_CHAR~$MAX_CHAR"
-                )
-            }
-        }
+        validateText(text)
 
         val bars = ArrayList<Boolean>(11 * (text.length + 2) + 13)
 
@@ -87,9 +87,121 @@ object Code128Encoder {
     }
 
     /**
+     * 自动子集模式编码（0.2.0+）：数字段自动切换 Code C（两位一组，密度翻倍），
+     * 其余字符走 Code B。规则与 zxing Code128Writer 的数字段策略一致：
+     * - 全数字且偶数位 → Start C + 数字对
+     * - 全数字且奇数位（≥3 位）→ 首位走 B，其余走 C
+     * - 混合内容 → 默认 B，遇 ≥4 位连续数字切 C（奇数个时首数字留在 B），段间用 99/100 切换
+     *
+     * @param text 仅支持 ASCII 32~126
+     * @return 模块位数组；总模块数 = 11×(符号数+2)+13，符号数含切换符
+     */
+    fun encodeAuto(text: String): BooleanArray {
+        val values = buildAutoValues(text)
+        return valuesToBars(values)
+    }
+
+    /**
+     * 自动模式的符号值序列（含起始符与切换符，不含校验与停止符），供测试与调试
+     */
+    internal fun buildAutoValues(text: String): List<Int> {
+        validateText(text)
+        val out = mutableListOf<Int>()
+
+        // 全数字特例
+        if (text.length >= 4 && text.all { it in '0'..'9' }) {
+            if (text.length % 2 == 0) {
+                out += CODE_START_C
+                var i = 0
+                while (i < text.length) {
+                    out += text.substring(i, i + 2).toInt()
+                    i += 2
+                }
+            } else {
+                // 首位留在 B，其余走 C
+                out += CODE_START_B
+                out += text[0].code - 32
+                out += CODE_CODE_C
+                var i = 1
+                while (i < text.length) {
+                    out += text.substring(i, i + 2).toInt()
+                    i += 2
+                }
+            }
+            return out
+        }
+
+        // 混合内容：默认 B，数字游程 ≥4 切 C
+        out += CODE_START_B
+        var i = 0
+        while (i < text.length) {
+            if (text[i] in '0'..'9') {
+                var j = i
+                while (j < text.length && text[j] in '0'..'9') j++
+                val runLen = j - i
+                if (runLen >= 4) {
+                    var pairStart = i
+                    if (runLen % 2 == 1) {
+                        // 奇数个数字：首数字留在 B
+                        out += text[i].code - 32
+                        pairStart = i + 1
+                    }
+                    out += CODE_CODE_C
+                    var k = pairStart
+                    while (k < j) {
+                        out += text.substring(k, k + 2).toInt()
+                        k += 2
+                    }
+                    if (j < text.length) out += CODE_CODE_B
+                    i = j
+                } else {
+                    out += text[i].code - 32
+                    i++
+                }
+            } else {
+                out += text[i].code - 32
+                i++
+            }
+        }
+        return out
+    }
+
+    /** 符号值序列 → 条/空模块（含校验与停止符） */
+    private fun valuesToBars(values: List<Int>): BooleanArray {
+        val bars = ArrayList<Boolean>(11 * (values.size + 1) + 13)
+
+        // 校验和：起始值 + Σ 第 i 个数据符号值×i（i 从 1 起，含切换符）
+        var checksum = values[0]
+        for (i in 1 until values.size) {
+            checksum += values[i] * i
+        }
+
+        addPattern(bars, CODE_PATTERNS[values[0]])
+        for (i in 1 until values.size) {
+            addPattern(bars, CODE_PATTERNS[values[i]])
+        }
+        addPattern(bars, CODE_PATTERNS[checksum % 103])
+        addPattern(bars, CODE_PATTERNS[CODE_STOP])
+        return bars.toBooleanArray()
+    }
+
+    /**
      * 编码后的总模块数（不含静区）：Start(11) + 数据×11 + 校验(11) + Stop(13)
      */
     fun moduleCount(text: String): Int = 11 * (text.length + 2) + 13
+
+    private fun validateText(text: String) {
+        if (text.isEmpty()) {
+            throw IllegalArgumentException("Code 128: 文本不能为空")
+        }
+        for (c in text) {
+            if (c.code < MIN_CHAR || c.code > MAX_CHAR) {
+                throw IllegalArgumentException(
+                    "Code 128-B 不支持字符 '$c' (ASCII ${c.code})，仅支持 ASCII $MIN_CHAR~$MAX_CHAR"
+                )
+            }
+        }
+    }
 
     private fun addPattern(bars: MutableList<Boolean>, pattern: IntArray) {
         var isBar = true
